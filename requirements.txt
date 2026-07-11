@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+langchain
+langchain-openai
+langchain-groq
+langchain-community
+langgraph
+python-dotenv
+yfinance
+pypdf
+langchain-pinecone
+pinecone
+langchain-text-splitters
+tavily-python
