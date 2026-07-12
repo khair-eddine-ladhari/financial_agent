@@ -1,12 +1,13 @@
+from dotenv import load_dotenv
+
+load_dotenv()  # must run BEFORE importing agent/tools, since they read env vars at import time
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from dotenv import load_dotenv
 
 from agent import run_financial_analysis
-from tools.filing_rag import ingest_filing
-
-load_dotenv()
+from tools.langchain_rag import ingest_filing
 
 app = FastAPI(title="Financial Research Analyst Agent")
 
@@ -43,6 +44,7 @@ def analyze(req: AnalysisRequest):
     """
     Main endpoint. Send a natural-language question, e.g.:
     "Analyze Tesla's Q3 performance and give me an investment recommendation"
+    The agent decides which tools it needs and returns a formatted report.
     """
     try:
         result = run_financial_analysis(req.question)
@@ -54,7 +56,8 @@ def analyze(req: AnalysisRequest):
 @app.post("/ingest-filing", response_model=IngestResponse)
 def ingest(req: IngestRequest):
     """
-    One-time step: ingest a company's PDF filing so the RAG tool can query it.
+    One-time step: ingest a company's PDF filing (10-K, earnings report)
+    so the agent's RAG tool can later query it under this namespace.
     """
     try:
         num_chunks = ingest_filing(req.pdf_path, req.namespace)
