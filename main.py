@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from agent import run_financial_analysis
 from tools.langchain_rag import ingest_filing
-
+from tenacity import retry, wait_random_exponential, stop_after_attempt
 app = FastAPI(title="Financial Research Analyst Agent")
 
 app.add_middleware(

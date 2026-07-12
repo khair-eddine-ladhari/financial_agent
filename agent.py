@@ -31,7 +31,12 @@ Guidelines for using these tools:
 - If a tool returns no useful information, say so plainly instead of filling the gap with assumptions.
 - Do not fabricate data.
 - Keep your final answer factual and neutral. Frame recommendations as analysis, not instructions to buy/sell.
-- If the user's question is narrow, answer directly without unnecessary tool calls."""
+- If the user's question is narrow, answer directly without unnecessary tool calls.
+-Before incorporating any information from search_recent_news, verify it 
+matches the company's verified details (sector, country, business description) 
+as found in query_company_filing. If a search result describes a company in a 
+different sector, country, or of clearly different scale, treat it as 
+referring to a DIFFERENT company and discard it -- do not include it in your analysis."""
 
 # Step 1: the ReAct agent -- decides which tools to call, in what order,
 # based on reasoning about the user's question.

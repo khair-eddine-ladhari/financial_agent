@@ -5,6 +5,7 @@ from langchain_core.tools import tool
 
 
 @tool
+@retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(4))
 def get_stock_price(ticker: str) -> str:
     """Get the current stock price and daily change for a given ticker symbol.
     Example input: 'TSLA', 'AAPL', 'GOOGL'

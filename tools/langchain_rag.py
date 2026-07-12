@@ -29,7 +29,7 @@ class PineconeEmbeddings(Embeddings):
     LangChain's Embeddings interface (embed_documents / embed_query).
     This replaces needing OpenAIEmbeddings -- no OpenAI key required.
     """
-
+    @retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(4))
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         result = pc.inference.embed(
             model=EMBED_MODEL,
@@ -37,7 +37,8 @@ class PineconeEmbeddings(Embeddings):
             parameters={"input_type": "passage", "truncate": "END"},
         )
         return [r["values"] for r in result]
-
+    
+    @retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(4))
     def embed_query(self, text: str) -> List[float]:
         result = pc.inference.embed(
             model=EMBED_MODEL,
@@ -60,14 +61,16 @@ def _get_loader(file_path: str):
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
-
-def ingest_filing(file_path: str, namespace: str) -> int:
+@retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(3))
+def ingest_filing(file_path: str, namespace: str, company_metadata: dict) -> int:
     """
-    One-time ingestion step: load a document (PDF or TXT), split it into
-    chunks, embed with Pinecone's hosted model, and upsert into Pinecone
-    under the given namespace.
-    Call this once per document before the agent can query it.
-    Returns the number of chunks created.
+    company_metadata example:
+    {
+        "company_name": "TechStack Inc",
+        "sector": "Cloud Infrastructure",
+        "country": "United States",
+        "ticker": None  # None if fictional/private, real ticker if public
+    }
     """
     loader = _get_loader(file_path)
     documents = loader.load()
@@ -75,14 +78,15 @@ def ingest_filing(file_path: str, namespace: str) -> int:
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_documents(documents)
 
+    # attach metadata to every chunk so it travels with the vectors
+    for chunk in chunks:
+        chunk.metadata.update(company_metadata)
+
     PineconeVectorStore.from_documents(
-        chunks,
-        embedding=embedding_function,
-        index_name=PINECONE_INDEX_NAME,
-        namespace=namespace,
+        chunks, embedding=embedding_function,
+        index_name=PINECONE_INDEX_NAME, namespace=namespace,
     )
     return len(chunks)
-
 
 @tool
 def query_company_filing(question: str, namespace: str = "default") -> str:
@@ -109,6 +113,14 @@ def query_company_filing(question: str, namespace: str = "default") -> str:
         if not context.strip():
             return "The filing does not contain information relevant to this question."
 
-        return context
+        # surface the verified metadata so the agent has ground truth to check against
+        meta = results[0].metadata
+        header = f"[Verified company info: {meta.get('company_name')}, sector: {meta.get('sector')}, country: {meta.get('country')}]\n\n"
+
+        return header + context
+
+            
+
+  
     except Exception as e:
         return f"Error querying filing: {str(e)}"
