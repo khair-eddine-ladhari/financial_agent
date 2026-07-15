@@ -8,7 +8,7 @@ LangChain's Embeddings interface so it plugs into PineconeVectorStore.
 """
 import os
 from typing import List
-
+from tenacity import retry, wait_random_exponential, stop_after_attempt
 from langchain_core.tools import tool
 from langchain_core.embeddings import Embeddings
 from langchain_pinecone import PineconeVectorStore
@@ -91,7 +91,9 @@ def ingest_filing(file_path: str, namespace: str, company_metadata: dict) -> int
 def query_company_filing(question: str, namespace: str = "default") -> str:
     """Answer a question using the company's uploaded financial filing (10-K, earnings report, etc.)
     via document retrieval. Use this when the question needs specific numbers or statements
-    from the official filing.
+    from the official filing. If multiple similar figures exist (e.g. total revenue vs. segment
+    revenue, current quarter vs. prior year), prefer the total/current-period figure unless the
+    question explicitly asks for a specific segment or period.
     Example input: question='What was Tesla's total revenue in Q3?', namespace='tesla-10k'
     """
     try:
@@ -104,7 +106,7 @@ def query_company_filing(question: str, namespace: str = "default") -> str:
             embedding=embedding_function,
             namespace=namespace,
         )
-        retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+        retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
 
         results = retriever.invoke(question)
         context = "\n\n---\n\n".join([doc.page_content for doc in results])

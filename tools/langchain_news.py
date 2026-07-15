@@ -1,7 +1,7 @@
 import os
 from langchain_core.tools import tool
 from tavily import TavilyClient
-
+from tenacity import retry, wait_random_exponential, stop_after_attempt
 tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 

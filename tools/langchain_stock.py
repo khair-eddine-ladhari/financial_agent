@@ -2,7 +2,7 @@
 
 import yfinance as yf
 from langchain_core.tools import tool
-
+from tenacity import retry, wait_random_exponential, stop_after_attempt
 
 @tool
 @retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(4))

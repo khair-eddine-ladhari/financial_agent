@@ -5,10 +5,11 @@ load_dotenv()  # must run BEFORE importing agent/tools, since they read env vars
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
+import traceback
 from agent import run_financial_analysis
 from tools.langchain_rag import ingest_filing
 from tenacity import retry, wait_random_exponential, stop_after_attempt
+
 app = FastAPI(title="Financial Research Analyst Agent")
 
 app.add_middleware(
@@ -22,7 +23,7 @@ app.add_middleware(
 
 class AnalysisRequest(BaseModel):
     question: str
-
+    namespace: str = "default"
 
 class AnalysisResponse(BaseModel):
     raw_findings: str
@@ -32,6 +33,7 @@ class AnalysisResponse(BaseModel):
 class IngestRequest(BaseModel):
     pdf_path: str
     namespace: str
+    company_metadata: dict
 
 
 class IngestResponse(BaseModel):
@@ -47,7 +49,7 @@ def analyze(req: AnalysisRequest):
     The agent decides which tools it needs and returns a formatted report.
     """
     try:
-        result = run_financial_analysis(req.question)
+        result = run_financial_analysis(req.question, req.namespace)
         return AnalysisResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -55,12 +57,9 @@ def analyze(req: AnalysisRequest):
 
 @app.post("/ingest-filing", response_model=IngestResponse)
 def ingest(req: IngestRequest):
-    """
-    One-time step: ingest a company's PDF filing (10-K, earnings report)
-    so the agent's RAG tool can later query it under this namespace.
-    """
     try:
-        num_chunks = ingest_filing(req.pdf_path, req.namespace)
+        num_chunks = ingest_filing(req.pdf_path, req.namespace, req.company_metadata)
         return IngestResponse(status="done", chunks=num_chunks)
     except Exception as e:
+        traceback.print_exc()  # ← prints the full traceback to your terminal
         raise HTTPException(status_code=500, detail=str(e))

@@ -56,16 +56,16 @@ report_prompt = ChatPromptTemplate.from_messages([
 report_chain = report_prompt | llm | StrOutputParser()
 
 
-def run_financial_analysis(question: str) -> dict:
+def run_financial_analysis(question: str, namespace: str = "default") -> dict:
     """
     Full pipeline: agent gathers findings using tools it decides to call,
     then the sequential chain formats those findings into a final report.
     """
-    # Run the agent -- it will call whichever tools it thinks are relevant
-    agent_result = agent.invoke({"messages": [("human", question)]})
+    contextual_question = f"{question}\n\n(Use namespace='{namespace}' when calling query_company_filing.)"
+
+    agent_result = agent.invoke({"messages": [("human", contextual_question)]})
     raw_findings = agent_result["messages"][-1].content
 
-    # Format the raw findings into a polished report
     final_report = report_chain.invoke({"findings": raw_findings})
 
     return {
