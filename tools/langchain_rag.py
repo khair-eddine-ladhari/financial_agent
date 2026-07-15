@@ -61,24 +61,23 @@ def _get_loader(file_path: str):
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
+from langchain_experimental.text_splitter import SemanticChunker
+from tenacity import retry, wait_random_exponential, stop_after_attempt
+
+#semantic chunking the best way to get the best results
+
 @retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(3))
 def ingest_filing(file_path: str, namespace: str, company_metadata: dict) -> int:
-    """
-    company_metadata example:
-    {
-        "company_name": "TechStack Inc",
-        "sector": "Cloud Infrastructure",
-        "country": "United States",
-        "ticker": None  # None if fictional/private, real ticker if public
-    }
-    """
     loader = _get_loader(file_path)
     documents = loader.load()
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    splitter = SemanticChunker(
+        embeddings=embedding_function,
+        breakpoint_threshold_type="gradient",
+        breakpoint_threshold_amount=0.8,
+    )
     chunks = splitter.split_documents(documents)
 
-    # attach metadata to every chunk so it travels with the vectors
     for chunk in chunks:
         chunk.metadata.update(company_metadata)
 
