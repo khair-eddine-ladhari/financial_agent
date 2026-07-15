@@ -74,7 +74,7 @@ def ingest_filing(file_path: str, namespace: str, company_metadata: dict) -> int
     splitter = SemanticChunker(
         embeddings=embedding_function,
         breakpoint_threshold_type="gradient",
-        breakpoint_threshold_amount=0.8,
+        breakpoint_threshold_amount=0.9,
     )
     chunks = splitter.split_documents(documents)
 
