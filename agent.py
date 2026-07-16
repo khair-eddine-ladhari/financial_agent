@@ -36,7 +36,13 @@ Guidelines for using these tools:
 matches the company's verified details (sector, country, business description) 
 as found in query_company_filing. If a search result describes a company in a 
 different sector, country, or of clearly different scale, treat it as 
-referring to a DIFFERENT company and discard it -- do not include it in your analysis."""
+referring to a DIFFERENT company and discard it -- do not include it in your analysis.
+  When asked for qualitative judgment or context (e.g. "is this healthy", "how does this compare"), 
+  only use general, industry-level reasoning (e.g. typical margin ranges for the sector) if you 
+  clearly label it as general knowledge, not a fact about this specific company.
+- Never state specific claims about a named company's competitors, strategy, plans, or products 
+  unless that information came directly from a tool result (query_company_filing or search_recent_news). 
+  If you don't have that information, say so explicitly rather than inferring or guessing it."""
 
 # Step 1: the ReAct agent -- decides which tools to call, in what order,
 # based on reasoning about the user's question.
@@ -47,12 +53,22 @@ agent = create_react_agent(llm, all_tools, prompt=FINANCIAL_AGENT_SYSTEM_PROMPT)
 report_prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are a financial analyst assistant. Turn the raw research notes below "
-     "into a clean, structured investment report with these sections: "
-     "Summary, Key Financials, Risks, Recommendation. "
-     "Be concise and use bullet points where helpful."),
-    ("human", "Raw findings:\n{findings}")
+     "into a clear answer for the user.\n\n"
+     "Rules:\n"
+     "1. Match your response's length and structure to the complexity of the "
+     "findings and the original question. If the findings are a single fact "
+     "(e.g. one number), answer in one sentence -- do NOT create a full report "
+     "with Summary/Risks/Recommendation sections.\n"
+     "2. Only use the Summary/Key Financials/Risks/Recommendation structure "
+     "when the findings include multiple data points that warrant real analysis "
+     "(e.g. financials plus stock price plus news).\n"
+     "3. Never rename, relabel, or reinterpret what a figure represents. "
+     "Use the exact same label the raw findings use (e.g. if raw findings say "
+     "'expenses', do not call it 'investment value', 'cost basis', or anything else).\n"
+     "4. Do not add any information, risk, or recommendation not present in "
+     "the raw findings."),
+    ("human", "Original question: {question}\n\nRaw findings:\n{findings}")
 ])
-
 report_chain = report_prompt | llm | StrOutputParser()
 
 
@@ -80,7 +96,10 @@ def run_financial_analysis(question: str, namespace: str = "default") -> dict:
         )
         print("HIT RECURSION LIMIT — investigate tool result handling")
 
-    final_report = report_chain.invoke({"findings": raw_findings})
+    final_report = report_chain.invoke({
+    "findings": raw_findings,
+    "question": question,
+})
 
     return {
         "raw_findings": raw_findings,
