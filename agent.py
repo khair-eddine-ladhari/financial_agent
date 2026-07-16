@@ -7,7 +7,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.prebuilt import create_react_agent
-
+from langgraph.errors import GraphRecursionError
 from tools import all_tools
 
 llm = ChatGroq(
@@ -56,6 +56,9 @@ report_prompt = ChatPromptTemplate.from_messages([
 report_chain = report_prompt | llm | StrOutputParser()
 
 
+
+
+
 def run_financial_analysis(question: str, namespace: str = "default") -> dict:
     """
     Full pipeline: agent gathers findings using tools it decides to call,
@@ -63,8 +66,19 @@ def run_financial_analysis(question: str, namespace: str = "default") -> dict:
     """
     contextual_question = f"{question}\n\n(Use namespace='{namespace}' when calling query_company_filing.)"
 
-    agent_result = agent.invoke({"messages": [("human", contextual_question)]})
-    raw_findings = agent_result["messages"][-1].content
+    try:
+        agent_result = agent.invoke(
+            {"messages": [("human", contextual_question)]},
+            config={"recursion_limit": 8}
+        )
+        raw_findings = agent_result["messages"][-1].content
+    except GraphRecursionError:
+        raw_findings = (
+            "The agent could not converge on an answer within the allowed number "
+            "of steps. It may have been stuck repeating the same tool call — "
+            "check the tool's output for errors or empty results."
+        )
+        print("HIT RECURSION LIMIT — investigate tool result handling")
 
     final_report = report_chain.invoke({"findings": raw_findings})
 
