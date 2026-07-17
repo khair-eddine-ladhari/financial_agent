@@ -6,7 +6,8 @@ financial calculations — reasons about which tools it actually needs for a
 given question, and generates a structured investment report.
 
 Built with **LangChain**, **LangGraph** (ReAct agent), **Groq** (LLM
-inference), **Pinecone** (vector store + hosted embeddings), and **FastAPI**.
+inference), **Pinecone** (vector store + hosted embeddings), **FastAPI**, and
+evaluated end-to-end with **LangSmith**.
 
 ## Tech stack & skills demonstrated
 
@@ -18,11 +19,15 @@ inference), **Pinecone** (vector store + hosted embeddings), and **FastAPI**.
   namespace-based multi-tenancy)
 - **External APIs** — yfinance (market data), Tavily (web search)
 - **API design** — REST endpoints, request/response validation, error handling
+- **Evaluation & observability** — LangSmith datasets/experiments, tracing
+  individual run failures down to root cause, iterating on error rate across
+  successive experiment runs
 - **AI safety / reliability** — system prompt guardrails against data
-  fabrication and entity conflation, documented known limitations
+  fabrication and entity conflation, retry/fallback handling for LLM
+  provider-level tool-calling failures, documented known limitations
 - **Engineering practices** — environment variable management, `.gitignore`
-  hygiene, modular file structure, retry-handling considerations, security
-  hardening checklist for future deployment
+  hygiene, modular file structure, API quota management, security hardening
+  checklist for future deployment
 
 ## Why this project
 
@@ -65,7 +70,8 @@ financial-agent/
 │   └── calculator.py      # Tool 4: deterministic financial math
 ├── agent.py                # ReAct agent + system prompt + report-formatting chain
 ├── main.py                 # FastAPI endpoints
-├── document.txt           # fictional sample filing for testing
+├── run_eval.py              # LangSmith evaluation target/runner
+├── document.txt            # fictional sample filing for testing
 ├── requirements.txt
 └── .env.example
 ```
@@ -81,6 +87,7 @@ financial-agent/
    - `GROQ_API_KEY` — https://console.groq.com/keys (agent's LLM)
    - `PINECONE_API_KEY` + `PINECONE_INDEX_NAME` — https://app.pinecone.io (vector store + embeddings)
    - `TAVILY_API_KEY` — https://tavily.com (web search tool)
+   - `LANGSMITH_API_KEY` — https://smith.langchain.com (evaluation & tracing)
 
 3. Run the API:
    ```bash
@@ -110,6 +117,61 @@ POST /analyze
 
 Response includes both `raw_findings` (the agent's raw output after calling
 tools) and `report` (the same findings reformatted into a structured report).
+
+## Evaluation with LangSmith
+
+The agent is evaluated against an 8-example dataset (`financial-agent-eval-v1`)
+covering narrow single-fact questions, multi-tool questions, and deliberate
+edge cases (e.g. a non-existent ticker, an ambiguous company name), with
+`manual_review` feedback and automatic latency/token/cost tracking per run.
+
+Running the eval:
+```bash
+python run_eval.py
+```
+
+Each run appears as a new experiment in the LangSmith dataset UI, so
+successive iterations can be compared side by side on error rate and latency.
+
+### Debugging process & fixes (error rate: 40% → 100% → 13%)
+
+Iterating on this eval surfaced several distinct failure modes, each requiring
+a different fix rather than one blanket solution:
+
+| Problem | Root cause | Fix |
+|---|---|---|
+| `TypeError: unexpected keyword argument 'api_token'` | Wrong constructor kwarg for the Gemini client (`api_token` vs `api_key`) | Corrected the kwarg name |
+| `tool_use_failed` on `get_stock_price` for an intentionally invalid ticker (`TSTK`) | Model hesitated when asked to format a tool call for an unfamiliar/fake symbol, emitting malformed pseudo-XML instead of a structured tool call | Added an explicit system-prompt instruction: always call the tool as given, even for unfamiliar tickers, and relay the tool's own "no data" response honestly |
+| `tool_use_failed` on `search_recent_news`, intermittently | Groq's `llama-3.3-70b-versatile` occasionally emits `<function=name{...}>` instead of a valid structured tool call for this tool specifically — not fixed by prompting alone, and not fully fixed by retries alone since `temperature=0` made failures deterministic (identical malformed output on every retry) | Added retry with a small non-zero temperature so retries aren't guaranteed to repeat the same broken generation; added a regex-based fallback that extracts the function name + arguments straight out of Groq's error message and invokes the tool directly, recovering a real answer instead of crashing |
+| Experiment jumped to 100% error rate | Not a code bug — hit Groq's free-tier daily token quota (100,000 TPD) after repeated full-dataset eval runs while iterating | Switched to testing single examples while debugging instead of re-running the full 8-example dataset each time; reserved full-dataset runs for after a fix looked solid |
+| `GraphRecursionError` on a multi-step question | Agent didn't converge within the 8-step `recursion_limit` | Existing fallback message surfaces this clearly in `raw_findings` instead of crashing the pipeline, flagged for further investigation into tool-output handling |
+| `RateLimitError` (429) mid-run | Same daily quota exhaustion, surfacing mid-agent rather than at the start | Added `RateLimitError` to the retry/except handling alongside `BadRequestError` so quota errors degrade gracefully instead of crashing the eval run |
+
+Error rate across successive experiment runs on the same dataset:
+
+```
+baseline-run-cad8d866   40%   (initial run, before any fixes)
+baseline-run-05e1271b   25%   (after ticker-handling prompt fix)
+baseline-run-d7883594  100%   (Groq daily quota exhausted mid-iteration)
+baseline-run-0acd1239   88%   (quota still recovering)
+baseline-run-7c6a080f   13%   (retry + prompt + recovery fixes, fresh quota)
+```
+
+The 100%/88% spikes are a useful reminder that not every regression in an
+eval is a code regression — ruling out infrastructure/quota causes before
+re-diagnosing the agent itself saved a lot of wasted debugging.
+
+### Remaining known issue
+
+`llama-3.3-70b-versatile` on Groq still shows occasional malformed tool-call
+generation for certain tool/query combinations that neither prompting,
+retries, nor temperature tuning fully eliminate. The regex-based recovery
+fallback mitigates the impact (a crash becomes a successful, if unusual,
+answer) but doesn't address the root cause. The next planned step is
+evaluating a different LLM provider/model for the agent's reasoning step to
+see whether its native tool-calling is more reliable for this workload, while
+keeping the rest of the pipeline (tools, prompt, LangSmith eval harness)
+unchanged.
 
 ## Known limitation: entity conflation via web search
 
@@ -148,9 +210,11 @@ were deliberately deferred rather than skipped:
 
 ## What I'd add next (if continuing this project)
 
+- Evaluate an alternative LLM provider/model for more reliable native tool-calling
 - Deterministic (non-LLM) entity verification before passing search results to the agent
-- Retry logic (`tenacity`) on all external API calls (Pinecone, Tavily, yfinance)
+- Retry logic (`tenacity`) on all external API calls (Pinecone, Tavily, yfinance) —
+  already in place for `get_stock_price` and `search_recent_news`, extend to
+  the remaining tools
 - The security items above, before any public deployment
 - A `compare_companies` tool that runs the agent twice and diffs results
-- LangSmith tracing to visualize the agent's reasoning steps
 - A simple frontend showing tool calls live as the agent works

@@ -8,12 +8,14 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.prebuilt import create_react_agent
 from langgraph.errors import GraphRecursionError
+from groq import BadRequestError, RateLimitError
+from tenacity import retry, wait_random_exponential, stop_after_attempt, retry_if_exception_type
 from tools import all_tools
 
 llm = ChatGroq(
     model="llama-3.3-70b-versatile",
     api_key=os.getenv("GROQ_API_KEY"),
-    temperature=0,
+    temperature=0.1,
 )
 
 FINANCIAL_AGENT_SYSTEM_PROMPT = """You are a financial research analyst assistant with access to the following tools:
@@ -42,7 +44,10 @@ referring to a DIFFERENT company and discard it -- do not include it in your ana
   clearly label it as general knowledge, not a fact about this specific company.
 - Never state specific claims about a named company's competitors, strategy, plans, or products 
   unless that information came directly from a tool result (query_company_filing or search_recent_news). 
-  If you don't have that information, say so explicitly rather than inferring or guessing it."""
+  If you don't have that information, say so explicitly rather than inferring or guessing it.
+  - If a ticker symbol looks unfamiliar, unusual, or possibly invalid, still call get_stock_price 
+  with it exactly as given -- do not refuse or hesitate to call the tool. The tool will report 
+  if no data is available; simply relay that result honestly."""
 
 # Step 1: the ReAct agent -- decides which tools to call, in what order,
 # based on reasoning about the user's question.
@@ -72,7 +77,20 @@ report_prompt = ChatPromptTemplate.from_messages([
 report_chain = report_prompt | llm | StrOutputParser()
 
 
-
+@retry(
+    wait=wait_random_exponential(min=1, max=10),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((BadRequestError, RateLimitError)),
+)
+def _invoke_agent(contextual_question: str):
+    """
+    Wraps agent.invoke so transient Groq failures (malformed tool-call
+    generation, rate limits) get retried instead of crashing the whole run.
+    """
+    return agent.invoke(
+        {"messages": [("human", contextual_question)]},
+        config={"recursion_limit": 8}
+    )
 
 
 def run_financial_analysis(question: str, namespace: str = "default") -> dict:
@@ -83,10 +101,7 @@ def run_financial_analysis(question: str, namespace: str = "default") -> dict:
     contextual_question = f"{question}\n\n(Use namespace='{namespace}' when calling query_company_filing.)"
 
     try:
-        agent_result = agent.invoke(
-            {"messages": [("human", contextual_question)]},
-            config={"recursion_limit": 8}
-        )
+        agent_result = _invoke_agent(contextual_question)
         raw_findings = agent_result["messages"][-1].content
     except GraphRecursionError:
         raw_findings = (
@@ -95,11 +110,23 @@ def run_financial_analysis(question: str, namespace: str = "default") -> dict:
             "check the tool's output for errors or empty results."
         )
         print("HIT RECURSION LIMIT — investigate tool result handling")
+    except BadRequestError as e:
+        raw_findings = (
+            "The agent failed to generate a valid tool call after multiple retries. "
+            f"Underlying error: {str(e)}"
+        )
+        print("HIT TOOL_USE_FAILED AFTER RETRIES — investigate malformed function call")
+    except RateLimitError as e:
+        raw_findings = (
+            "The agent hit a rate limit after multiple retries and could not complete "
+            f"the request. Underlying error: {str(e)}"
+        )
+        print("HIT RATE LIMIT AFTER RETRIES — consider slowing down eval requests")
 
     final_report = report_chain.invoke({
-    "findings": raw_findings,
-    "question": question,
-})
+        "findings": raw_findings,
+        "question": question,
+    })
 
     return {
         "raw_findings": raw_findings,
